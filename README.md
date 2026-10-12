@@ -1,25 +1,71 @@
 # GDUE DevPortal
 
-A small, standalone Python 3.11+ **local** build-catalog client. It serves plain HTML/CSS/JS on `127.0.0.1` only. Its Python process reads authorized build metadata from DevHub and downloads package bytes **directly from Baidu**, never through DevHub or the browser. This public repository does not include a DevHub service, credentials, game packages, a committed Windows binary, a release channel, or self-update.
+[中文](#中文) · [English](#english)
 
-## Set up and start
+## 中文
 
-From this repository, run `python -m dev_portal configure --hub-url https://YOUR-PRIVATE-DEVHUB-ORIGIN` (or `http://127.0.0.1:PORT` over an owner-authorized local tunnel). The command prompts **without echoing** for your individually issued Portal key. Never put the key in a command argument, browser page, repository `.env`, screenshot or issue. `http://localhost` and non-loopback plaintext HTTP are intentionally refused; use a numeric loopback address. Then run `python -m dev_portal serve` and open the printed URL on **the same machine**. `--downloads PATH` chooses a destination; by default completed files go to `~/Downloads/DevPortal`. `--port PORT` selects a loopback port, or defaults to an ephemeral port. After packaging/installing the Python project, the equivalent launcher is `gdue-dev-portal`.
+DevPortal 是运行在**使用者自己电脑**上的游戏构建下载器：浏览器只打开本机页面，Python 客户端从 DevHub 读取获授权的构建列表，并直接从百度网盘下载文件。支持断点续传和 SHA-256 校验；DevHub 不转发文件。
 
-Configuration contains **only** DevHub origin and the per-device Portal key. It lives in `~/.config/gdue-dev-portal/config.json` on POSIX (private directory, mode `0700`, file mode `0600`) or `%LOCALAPPDATA%\GDUEDevPortal\config.json` on Windows (under the user's profile ACL). `configure` replaces a safe existing configuration for key rotation. No Baidu token, signed URL or downloaded file is persisted there. Protect the user profile and any chosen downloads directory; on Windows the client requires the downloads directory inside the user profile so its inherited ACLs protect partial files. Do not share a downloads folder writable by others.
+**当前状态（2026-10-12）：**客户端源码和 Windows CI 便携包已准备好，但 DevHub 的 Portal 服务端、设备密钥及独立设备访问尚未部署。下面的步骤需要管理员先完成服务端准备，不能直接用于公开互联网。
 
-The page shows filename, project, channel, **target platform**, exact size and local progress. A `Linux` build listed on Windows is still a **Linux** build: downloading it is not proof it can run on Windows. Only the Python worker receives a short-lived Baidu `dlink` and owner `access_token` after the user chooses a build. The browser receives neither value. DevHub Portal keys are isolated from operator and Unreal-plugin credentials. **Baidu's delivered owner access token may retain broad app-directory permissions until Baidu invalidates or expires it; revoking the Portal key stops future DevHub handoffs, not a token already delivered.** Share keys only with trusted recipients.
+### 部署与使用
 
-## Transfer and recovery
+**管理员先准备服务端：**在私有 GameDevUE 项目中评审并部署包含 Portal 接口的 DevHub 镜像，先做停写备份并保留回滚镜像；安全配置百度授权、登记构建，向可信使用者**单独**签发设备密钥。为使用者设备提供经验证的 HTTPS 地址，或在该设备上单独建立私有隧道。不要把 DevHub 的 `8765` 端口直接开放到公网；本仓库不包含服务端或凭据。
 
-The worker allows HTTPS Baidu download/CDN hosts only and sends `User-Agent: pan.baidu.com`. It requests at most 4 MiB per `Range`, verifies an exact `206`, `Content-Range`, length, total and identity encoding before committing that segment, and vets at most five redirects. An expired link or unexpected `200`/`416` causes a **failure**, not an appended error page. Press **Download / resume** again to obtain a fresh DevHub handoff. A private `.devportal` directory in the downloads directory holds owner-only partials and checkpoints keyed by build ID, exact remote path/`fs_id`, filename, size and SHA-256; it contains no access token or signed URL. On restart the worker verifies the committed prefix and discards only uncommitted crash bytes. If identity or committed bytes drift, it refuses to append; a corrupt complete partial is quarantined. Inspect/remove the affected `.part` and `.json` manually only when intentionally starting that build again. A final file appears only after full SHA-256 verification and is linked into place without overwriting an existing target. Deleting a final file or a quarantine is a **manual** owner decision.
+**Windows 便携版（无需安装 Python）：**从本仓库 GitHub Actions 中成功的 `DevPortal offline client CI` 运行下载 `DevPortal-windows-x64`，解压并保留整个 `DevPortal` 文件夹。在该文件夹的上一级打开 PowerShell：
 
-The local page requires an unguessable per-process CSRF token and matching loopback Origin/Host to start a transfer. Pages from other websites cannot authorize a download. Do not expose this loopback service through a public tunnel/proxy. Server error messages and logs do not contain upstream response bodies, signed links or tokens. Downloads can consume substantial local disk space; the service will not relocate them to DevHub.
+```powershell
+.\DevPortal\DevPortal.exe configure --hub-url https://YOUR-PRIVATE-DEVHUB-ORIGIN
+.\DevPortal\DevPortal.exe serve
+```
 
-## Standalone offline tests
+配置时按隐藏提示输入管理员签发的设备密钥，然后在**同一台电脑**打开终端打印的本机地址。Actions 产物仅保留 7 天，**不是**已签名安装包或正式 Release。
 
-`python -m unittest discover -s tests -v` runs synthetic fake DevHub/Baidu HTTP and loopback web tests without credentials, network downloads or packaged game archives. The local integration fixture covers list → fresh handoff → direct range transfer → verified file. No >1 GiB file or live provider access is needed. `.github/workflows/client-ci.yml` runs these tests on Linux and Windows, then builds a PyInstaller **one-directory** Windows x64 launcher and uploads a portable ZIP as a short-lived workflow artifact. Build dependencies are pinned in `requirements-build.txt`; CI has no provider or project secrets and does not checkout the private game repository. Download the ZIP only from a trusted workflow run and inspect it before use. CI success is not a reviewed GitHub Release, installed update, signed binary, or automatic self-update; real DevHub/Baidu and large-file testing still require an authorized environment. Start a packaged client with `DevPortal.exe configure`, then `DevPortal.exe serve` on the target Windows machine.
+**从源码运行（Python 3.11+，Linux/macOS）：**在此仓库根目录执行：
 
-## Repository boundary
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install .
+.venv/bin/python -m dev_portal configure --hub-url https://YOUR-PRIVATE-DEVHUB-ORIGIN
+.venv/bin/python -m dev_portal serve
+```
 
-The private GameDevUE repository pins this public source at `services/dev_portal` as a Git submodule; DevHub backend and its secrets stay in the private project. To obtain a pinned client after an authorized submodule pointer is committed, run `git submodule update --init services/dev_portal` in the parent checkout. No license has been selected yet. This public source is not permission to distribute the game, its assets, or account credentials.
+`configure` 会隐藏密钥输入；`serve` 只监听本机并打印访问地址。可用 `serve --downloads PATH` 指定下载位置，默认 `~/Downloads/DevPortal`；Windows 下载目录必须位于用户配置文件内。只有在**使用者自己的电脑**上建好授权隧道时，才可把服务端地址改为 `http://127.0.0.1:PORT`；别人的 `127.0.0.1` 无法直接连接你的电脑。
+
+**安全提示：**不要把设备密钥写进命令、网页、截图或仓库。百度授权令牌可能拥有较广的应用目录权限，密钥只应发给可信使用者。下载到 Windows 的 Linux 游戏包仍不能在 Windows 运行。客户端不会自动更新；本项目尚未指定开源许可证。
+
+本地离线测试：`python -m unittest discover -s tests -v`。
+
+## English
+
+DevPortal is a build downloader that runs on the **recipient's own computer**. The browser opens a local page; the Python client lists authorized builds through DevHub and downloads files **directly from Baidu**. It supports resume and SHA-256 verification. DevHub does not relay the file bytes.
+
+**Status (2026-10-12):** The client source and Windows CI portable artifact exist, but the Portal backend, per-device keys, and independent-device access are **not deployed yet**. The steps below require the operator to prepare the server first; they do not create a public service.
+
+### Deploy and use
+
+**Server operator first:** In the private GameDevUE project, review and deploy a Portal-enabled DevHub image after a stopped-writer backup, keeping a rollback image. Configure Baidu authorization privately, register builds, and issue a **separate** Portal key to each trusted recipient. Provide a verified HTTPS origin or a private tunnel set up on that recipient's device. Never expose DevHub port `8765` directly to the internet. This public repository contains neither the backend nor credentials.
+
+**Windows portable (no Python installation):** Download `DevPortal-windows-x64` from a successful `DevPortal offline client CI` run under this repository's GitHub Actions. Extract and keep the whole `DevPortal` folder. Open PowerShell in its parent directory:
+
+```powershell
+.\DevPortal\DevPortal.exe configure --hub-url https://YOUR-PRIVATE-DEVHUB-ORIGIN
+.\DevPortal\DevPortal.exe serve
+```
+
+Enter the operator-issued key at the hidden prompt, then open the printed local URL **on that same computer**. CI artifacts expire after 7 days; they are **not** signed installers or reviewed Releases.
+
+**Run from source (Python 3.11+, Linux/macOS):** From this repository's root:
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install .
+.venv/bin/python -m dev_portal configure --hub-url https://YOUR-PRIVATE-DEVHUB-ORIGIN
+.venv/bin/python -m dev_portal serve
+```
+
+`configure` prompts for the key without echoing it. `serve` binds only to loopback and prints the local URL. Use `serve --downloads PATH` to choose a destination (default: `~/Downloads/DevPortal`); on Windows it must be inside the user profile. Use `http://127.0.0.1:PORT` only if an authorized tunnel is set up **on the recipient's own device**. Someone else's `127.0.0.1` cannot reach your computer.
+
+**Safety:** Never put the Portal key in a command, web page, screenshot, or repository. A delivered Baidu owner token may carry broad app-directory access; share keys only with trusted recipients. A Linux game archive downloaded on Windows is still a Linux build. There is no automatic client update or selected open-source license.
+
+Offline tests: `python -m unittest discover -s tests -v`.

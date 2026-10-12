@@ -23,6 +23,8 @@ build/
 Saved/
 Packaged/
 downloads/
+.devportal/
+*.part
 *.partial
 *.log
 .DS_Store

@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gdue-dev-portal"
+version = "0.1.0"
+description = "Standalone local client for authorized GameDevUE build downloads"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+gdue-dev-portal = "dev_portal.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["dev_portal*"]
+
+[tool.setuptools.package-data]
+dev_portal = ["static/*.html", "static/*.css", "static/*.js"]

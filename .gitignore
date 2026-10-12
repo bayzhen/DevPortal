@@ -1,0 +1,28 @@
+# Local credentials and sensitive material
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.key
+
+# Local Python and JavaScript environments and build artifacts
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+node_modules/
+.dist/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+
+# Downloaded builds and local state
+Saved/
+Packaged/
+downloads/
+*.partial
+*.log
+.DS_Store

@@ -72,9 +72,9 @@ class DownloadTests(unittest.TestCase):
         binary = (b"archive\r\n\x1a\n\x00\xff\r\n" * 5) + b"tail"
         build = replace(BUILD, size=len(binary), sha256=hashlib.sha256(binary).hexdigest())
         download_handoff = replace(handoff(), size=build.size, sha256=build.sha256)
-        segment_bytes = 8
+        segment_bytes = 12  # First committed segment includes CRLF, Ctrl-Z and LF.
         def interrupted(_method, _url, headers):
-            if headers["Range"] == "bytes=0-7":
+            if headers["Range"] == "bytes=0-11":
                 return range_response(headers, payload=binary)
             return FakeResponse(403)
         with self.assertRaises(PortalError):
@@ -89,7 +89,7 @@ class DownloadTests(unittest.TestCase):
             return range_response(headers, payload=binary)
         finished = download(build, replace(download_handoff, access_token="fresh-token"), self.destination,
                             transport=FakeTransport(resumed), segment_bytes=segment_bytes)
-        self.assertEqual(ranges[0], "bytes=8-15")
+        self.assertEqual(ranges[0], "bytes=12-23")
         self.assertEqual(finished.read_bytes(), binary)
         self.assertEqual(hashlib.sha256(finished.read_bytes()).hexdigest(), build.sha256)
         self.assertFalse(partial.exists())

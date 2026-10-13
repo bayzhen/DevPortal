@@ -3,7 +3,7 @@ name: DevPortal Windows preview release
 on:
   push:
     tags:
-      - v0.2.0-rc.1
+      - v0.2.0-rc.2
 
 permissions:
   contents: read
@@ -25,7 +25,7 @@ jobs:
         shell: pwsh
         run: |
           $version = (python -m dev_portal --version).Trim()
-          if ($LASTEXITCODE -ne 0 -or $env:GITHUB_REF_NAME -ne "v${version}-rc.1") {
+          if ($LASTEXITCODE -ne 0 -or $env:GITHUB_REF_NAME -ne "v${version}-rc.2") {
             throw 'Tag must match the reviewed preview client version'
           }
       - name: Run offline Windows tests
@@ -61,7 +61,7 @@ jobs:
           Write-Host "Windows portable ZIP SHA-256: $hash"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: DevPortal-preview-v0.2.0-rc.1
+          name: DevPortal-preview-v0.2.0-rc.2
           path: |
             DevPortal-windows-x64.zip
             SHA256SUMS.txt
@@ -82,7 +82,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name DevPortal-preview-v0.2.0-rc.1 --dir release-assets
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name DevPortal-preview-v0.2.0-rc.2 --dir release-assets
           (cd release-assets && sha256sum -c SHA256SUMS.txt)
           python3 - <<'PY'
           import re
@@ -103,4 +103,4 @@ jobs:
           gh release create "$GITHUB_REF_NAME" release-assets/DevPortal-windows-x64.zip release-assets/SHA256SUMS.txt \
             --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease --latest=false \
             --title "DevPortal $GITHUB_REF_NAME (preview)" \
-            --notes-file .github/release-notes-v0.2.0-rc.1.md
+            --notes-file .github/release-notes-v0.2.0-rc.2.md

@@ -1,4 +1,4 @@
-"""PyInstaller entry point; packaged CLI still requires owner-local configuration."""
+"""PyInstaller entry point; bare launch opens native project sign-in."""
 from dev_portal.cli import main
 
 if __name__ == '__main__':

@@ -26,13 +26,16 @@ def _port(raw: str) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Local GameDevUE build downloader")
     parser.add_argument("--version", action="version", version=__version__)
-    commands = parser.add_subparsers(dest="command", required=True)
+    commands = parser.add_subparsers(dest="command")
     configure = commands.add_parser("configure", help="store DevHub origin and Portal key in your user profile")
     configure.add_argument("--hub-url", help="HTTPS origin or numeric loopback HTTP origin")
     serve = commands.add_parser("serve", help="serve the local browser page (loopback only)")
     serve.add_argument("--port", type=_port, default=0, help="loopback port (default: random free port)")
     serve.add_argument("--downloads", type=Path, default=Path.home() / "Downloads" / "DevPortal", help="local download directory")
     args = parser.parse_args(argv)
+    if args.command is None:
+        from .desktop import run_desktop
+        return run_desktop()
     try:
         if args.command == "configure":
             hub = args.hub_url or input("DevHub origin (HTTPS or numeric loopback HTTP): ").strip()

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gdue-dev-portal"
-version = "0.1.0"
+version = "0.2.0"
 description = "Standalone local client for authorized GameDevUE build downloads"
 requires-python = ">=3.11"
 dependencies = []

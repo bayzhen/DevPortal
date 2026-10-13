@@ -34,13 +34,22 @@ jobs:
         run: |
           python -m pip install --disable-pip-version-check --no-cache-dir -r requirements-build.txt
           python -m pip install --disable-pip-version-check --no-build-isolation --no-deps .
-      - name: Build a one-directory launcher with static UI
-        run: python -m PyInstaller --noconfirm --onedir --name DevPortal --add-data "dev_portal/static;dev_portal/static" run_dev_portal.py
-      - name: Smoke test and inspect portable folder
+      - name: Build a windowed one-directory launcher with static UI
+        run: python -m PyInstaller --noconfirm --onedir --windowed --name DevPortal --add-data "dev_portal/static;dev_portal/static" run_dev_portal.py
+      - name: Smoke test native first-run startup and inspect portable folder
         shell: pwsh
         run: |
-          & .\dist\DevPortal\DevPortal.exe --version
-          if ($LASTEXITCODE -ne 0) { throw 'Portable launcher failed to start' }
+          $launcher = (Resolve-Path .\dist\DevPortal\DevPortal.exe).Path
+          $versionCheck = Start-Process -FilePath $launcher -ArgumentList '--version' -PassThru -Wait
+          if ($versionCheck.ExitCode -ne 0) { throw 'Portable launcher failed to start' }
+          $process = Start-Process -FilePath $launcher -PassThru
+          try {
+            Start-Sleep -Seconds 2
+            $process.Refresh()
+            if ($process.HasExited) { throw 'First-run native dialog exited unexpectedly' }
+          } finally {
+            if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+          }
           if (-not (Test-Path .\dist\DevPortal\_internal\dev_portal\static\index.html)) { throw 'Static UI missing' }
           $bad = Get-ChildItem .\dist\DevPortal -Recurse -Force -File | Where-Object {
             $_.Name -match '(?i)(^\.env($|\.)|\.sqlite3?$|\.partial$|\.receipt\.json$|\.tar\.zst$|\.pem$|\.key$)'

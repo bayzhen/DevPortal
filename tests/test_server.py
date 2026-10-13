@@ -123,6 +123,17 @@ class LocalPageTests(unittest.TestCase):
         self.assertTrue(all(url.startswith("https://hub.example/portal/v1/builds") for _, url in self.calls))
         self.assertTrue(all(url.startswith("https://d.pcs.baidu.com/") for _, url, _, _ in self.transfer.calls))
 
+    def test_project_label_is_public_only_and_empty_catalog_is_not_invented(self):
+        status, page, _ = self.request("GET", "/")
+        self.assertEqual(status, 200)
+        self.assertIn(b'id="project-name"', page)
+        status, script, _ = self.request("GET", "/static/app.js")
+        self.assertEqual(status, 200)
+        self.assertIn(b'projectName.textContent', script)
+        self.assertIn(b'projects.length > 1', script)
+        self.assertNotIn(TOKEN.encode(), page + script)
+        self.assertNotIn(b'portal-key-safe', page + script)
+
     def test_unknown_build_and_malformed_action_are_bounded(self):
         status, body, _ = self.request("POST", "/api/download", origin=self.server.origin,
                                        csrf=self.server.csrf, payload={"build_id": "other", "dlink": "malicious"})

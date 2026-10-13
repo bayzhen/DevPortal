@@ -2,6 +2,7 @@
 const csrf = document.querySelector('meta[name="devportal-csrf"]').content;
 const tbody = document.querySelector("#build-list");
 const catalogMessage = document.querySelector("#catalog-message");
+const projectName = document.querySelector("#project-name");
 const downloadMessage = document.querySelector("#download-message");
 const count = document.querySelector("#download-count");
 const meter = document.querySelector("#download-progress");
@@ -18,9 +19,13 @@ async function responseJson(url, options) {
 
 async function catalog() {
   catalogMessage.textContent = "Loading catalog…";
+  projectName.textContent = "";
   tbody.replaceChildren();
   try {
     const {builds} = await responseJson("/api/builds");
+    const projects = [...new Set(builds.map(build => build.project_ref))];
+    projectName.textContent = projects.length === 1 ? `Project: ${projects[0]}` :
+      projects.length > 1 ? `${projects.length} authorized projects` : "";
     catalogMessage.textContent = builds.length ? `${builds.length} build(s) available.` : "No builds are available for this key.";
     for (const build of builds) {
       const row = document.createElement("tr");

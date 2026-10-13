@@ -1,5 +1,6 @@
 import base64
 import struct
+import tempfile
 import threading
 import unittest
 from pathlib import Path
@@ -95,6 +96,22 @@ class DesktopSessionTests(unittest.TestCase):
         self.assertEqual(self.saved, [pairing()])
         self.assertEqual(self.forgot, [])
         self.session.close()
+
+    def test_forget_restart_login_keeps_existing_download_checkpoint(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.session.downloads = Path(root) / "Downloads" / "DevPortal"
+            private = self.session.downloads / ".devportal"
+            private.mkdir(parents=True)
+            partial = private / "existing.part"
+            checkpoint = private / "existing.json"
+            partial.write_bytes(b"archive\r\n\x1a")
+            checkpoint.write_text('{"state":"active"}')
+            self.session.connect(pairing(), remember=True)
+            self.session.forget()
+            self.session.close()
+            self.session.connect(pairing(), remember=False)
+            self.assertEqual(partial.read_bytes(), b"archive\r\n\x1a")
+            self.assertEqual(checkpoint.read_text(), '{"state":"active"}')
 
     def test_forget_during_inflight_remember_cannot_restore_saved_bearer(self):
         waiting, proceed = threading.Event(), threading.Event()

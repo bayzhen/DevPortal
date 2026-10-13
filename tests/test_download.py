@@ -1,9 +1,11 @@
+from dataclasses import replace
 import hashlib
 import json
 import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from dev_portal.client import PortalError
 from dev_portal.download import download, _initial_url
@@ -63,6 +65,35 @@ class DownloadTests(unittest.TestCase):
                  transport=FakeTransport(resumed), segment_bytes=7)
         self.assertEqual(resumed_ranges[0], "bytes=7-13")
         self.assertEqual((self.destination / BUILD.filename).read_bytes(), PAYLOAD)
+
+    def test_binary_archive_with_ctrl_z_and_crlf_survives_restart_and_resume(self):
+        # On Windows raw os.open defaults to CRT text mode unless O_BINARY is set.
+        # Both Ctrl-Z (logical EOF) and CRLF translation must remain inert.
+        binary = (b"archive\r\n\x1a\n\x00\xff\r\n" * 5) + b"tail"
+        build = replace(BUILD, size=len(binary), sha256=hashlib.sha256(binary).hexdigest())
+        download_handoff = replace(handoff(), size=build.size, sha256=build.sha256)
+        segment_bytes = 8
+        def interrupted(_method, _url, headers):
+            if headers["Range"] == "bytes=0-7":
+                return range_response(headers, payload=binary)
+            return FakeResponse(403)
+        with self.assertRaises(PortalError):
+            download(build, download_handoff, self.destination,
+                     transport=FakeTransport(interrupted), segment_bytes=segment_bytes)
+        partial, metadata = self._files()
+        self.assertEqual(partial.read_bytes(), binary[:segment_bytes])
+        self.assertEqual(json.loads(metadata.read_text())["offset"], segment_bytes)
+        ranges = []
+        def resumed(_method, _url, headers):
+            ranges.append(headers["Range"])
+            return range_response(headers, payload=binary)
+        finished = download(build, replace(download_handoff, access_token="fresh-token"), self.destination,
+                            transport=FakeTransport(resumed), segment_bytes=segment_bytes)
+        self.assertEqual(ranges[0], "bytes=8-15")
+        self.assertEqual(finished.read_bytes(), binary)
+        self.assertEqual(hashlib.sha256(finished.read_bytes()).hexdigest(), build.sha256)
+        self.assertFalse(partial.exists())
+        self.assertFalse(metadata.exists())
 
     def test_refuses_bad_status_range_length_encoding_and_early_eof(self):
         def wrong_range(headers):
@@ -160,12 +191,37 @@ class DownloadTests(unittest.TestCase):
         partial, checkpoint = self._files()
         with partial.open("r+b") as file:
             file.write(b"X")
+            file.seek(0, os.SEEK_END)
+            file.write(b"extra")  # Do not truncate evidence before verifying its prefix.
+        original = partial.read_bytes()
         fake = FakeTransport(lambda m, u, h: self.fail("Network should not open"))
-        with self.assertRaisesRegex(PortalError, "changed"):
-            download(BUILD, handoff(), self.destination, transport=fake, segment_bytes=7)
+        with self.assertLogs("dev_portal.download", level="WARNING") as diagnostics:
+            with self.assertRaisesRegex(PortalError, "changed"):
+                download(BUILD, handoff(), self.destination, transport=fake, segment_bytes=7)
+        self.assertIn("reason=hash_mismatch", diagnostics.output[0])
+        self.assertIn("build_id=build-one", diagnostics.output[0])
+        self.assertEqual(partial.read_bytes(), original)
         self.assertEqual(json.loads(checkpoint.read_text())["state"], "quarantined")
         with self.assertRaises(PortalError):
             download(BUILD, handoff(token="new"), self.destination, transport=fake, segment_bytes=7)
+
+    def test_short_read_reports_bounded_diagnostics_without_discarding_partial(self):
+        def interrupted(_method, _url, headers):
+            return range_response(headers) if headers["Range"].startswith("bytes=0-") else FakeResponse(403)
+        with self.assertRaises(PortalError):
+            download(BUILD, handoff(), self.destination, transport=FakeTransport(interrupted), segment_bytes=7)
+        partial, checkpoint = self._files()
+        original = partial.read_bytes()
+        fake = FakeTransport(lambda *_: self.fail("Network should not open"))
+        with patch("dev_portal.download.os.read", return_value=b""), self.assertLogs(
+            "dev_portal.download", level="WARNING"
+        ) as diagnostics, self.assertRaisesRegex(PortalError, r"0/7 bytes read; file size 7"):
+            download(BUILD, handoff(), self.destination, transport=fake, segment_bytes=7)
+        self.assertEqual(partial.read_bytes(), original)
+        self.assertEqual(json.loads(checkpoint.read_text())["state"], "active")
+        self.assertIn("build_id=build-one", diagnostics.output[0])
+        self.assertIn("reason=short_read", diagnostics.output[0])
+        self.assertNotIn(TOKEN, diagnostics.output[0])
 
     def test_uncommitted_crash_bytes_trim_before_resume(self):
         def interrupted(method, url, headers):

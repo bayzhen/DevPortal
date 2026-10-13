@@ -6,11 +6,11 @@
 
 DevPortal 是运行在**使用者自己的 Windows 电脑**上的游戏构建下载器。应用中的 Python 工作进程建立经过 SSH 服务器公钥校验的本机私有隧道；浏览器只打开本机项目页面，绝不接收配对码或百度下载授权。客户端从百度网盘直接断点续传，并核对文件大小和 SHA-256；DevHub 不转发文件。
 
-**状态（2026-10-13）：**新版 [v0.2.0-rc.1 Windows 预览版](https://github.com/bayzhen/DevPortal/releases/tag/v0.2.0-rc.1) 的源码及 Windows CI 已通过；私有 Portal 服务端、个人设备码及妻子电脑的完整下载仍须分别验收。历史版 [v0.1.0-rc.1](https://github.com/bayzhen/DevPortal/releases/tag/v0.1.0-rc.1) **不支持**下面的一码登录。
+**重要：暂停 v0.2.0-rc.1 的 Windows 下载。** 已发现该预览版使用了 Windows 文本模式处理二进制分段，可能破坏归档并造成 `Partial file changed before verification`。这是**客户端缺陷，不是个人码失效**；关闭应用，先在本机私密备份 `%USERPROFILE%\Downloads\DevPortal\.devportal\`（含隐藏 `.part` 和 `.json`），不要反复重试或删除断点，等待修复版经真实 Windows 测试后再下载。旧版 ZIP 不会自动更新。私有 Portal 服务端和个人 tester 码已在管理员侧验证，使用者本人完整下载仍须另行验收。历史版 [v0.1.0-rc.1](https://github.com/bayzhen/DevPortal/releases/tag/v0.1.0-rc.1) **不支持**下面的一码登录。
 
-### 使用者：只需三步（新版发布并由管理员开通后）
+### 使用者：只需三步（已修复的新版发布并由管理员开通后）
 
-1. 从 [v0.2.0-rc.1 预览版](https://github.com/bayzhen/DevPortal/releases/tag/v0.2.0-rc.1)下载 Windows x64 ZIP 与 `SHA256SUMS.txt`，检查 SHA-256，解压整个 `DevPortal` 文件夹；保留里面所有文件。便携版未签名，Windows 可能显示来源确认。
+1. 待管理员确认修复版通过 Windows 测试后，从 [DevPortal Releases](https://github.com/bayzhen/DevPortal/releases)下载该**修复版** Windows x64 ZIP 与 `SHA256SUMS.txt`（不要使用有已知问题的 v0.2.0-rc.1），检查 SHA-256，解压整个 `DevPortal` 文件夹到**新目录**；保留里面所有文件。便携版未签名，Windows 可能显示来源确认。
 2. 双击 `DevPortal.exe`，**只在原生窗口**粘贴管理员私下发送的**本人专属长配对码**。可选勾选“在这台电脑记住登录”（默认不勾选），点击“登录并打开项目”。不要在浏览器里粘贴配对码或手动输入服务器地址/SSH 命令。
 3. 在自动打开的本机项目页选择获授权的构建并下载。项目页会标明目标平台；Linux 构建即使下载到 Windows 也不能在 Windows 运行。下载进行时不要退出应用；网络中断后重新登录并重试，可按验证规则续传已保存的部分。
 
@@ -35,11 +35,11 @@ python3 -m venv .venv
 
 DevPortal runs on the **recipient's own Windows PC**. Its Python worker creates a private local SSH tunnel with a pinned public server key; the browser sees only the local project page, **never** the pairing code or Baidu handoff. The client downloads directly from Baidu with validated resume, exact size and SHA-256. DevHub does not relay file bytes.
 
-**Status (2026-10-13):** Source and Windows CI for the new [v0.2.0-rc.1 preview](https://github.com/bayzhen/DevPortal/releases/tag/v0.2.0-rc.1) have passed. The private Portal backend, per-device credential and complete download on the recipient's own PC each require separate verification. The historical [v0.1.0-rc.1](https://github.com/bayzhen/DevPortal/releases/tag/v0.1.0-rc.1) does **not** support one-code sign-in.
+**Important: stop v0.2.0-rc.1 downloads on Windows.** This preview can process binary archive segments through the Windows CRT text mode, corrupting bytes or failing with `Partial file changed before verification`. This is a **client defect, not an invalid pairing code**. Close the app; make a private copy of `%USERPROFILE%\Downloads\DevPortal\.devportal\` (including hidden `.part` and `.json` files) before any further attempt, and await a Windows-tested fix. The old ZIP will not update itself. The operator has verified the private Portal service and a personal tester code; a full download on the recipient's own PC remains unverified. Historical [v0.1.0-rc.1](https://github.com/bayzhen/DevPortal/releases/tag/v0.1.0-rc.1) does **not** support one-code sign-in.
 
-### Recipient: three steps (after the new preview and private service are ready)
+### Recipient: three steps (after the fixed preview and private service are ready)
 
-1. Download the Windows x64 ZIP and `SHA256SUMS.txt` from the [v0.2.0-rc.1 preview Release](https://github.com/bayzhen/DevPortal/releases/tag/v0.2.0-rc.1), verify SHA-256, and extract the entire `DevPortal` directory. The portable executable is unsigned.
+1. Once the operator confirms a Windows-tested fix, download the **fixed** Windows x64 ZIP and `SHA256SUMS.txt` from [DevPortal Releases](https://github.com/bayzhen/DevPortal/releases), **not** v0.2.0-rc.1. Verify SHA-256 and extract the entire `DevPortal` folder to a new location. The portable executable is unsigned.
 2. Double-click `DevPortal.exe`; paste your **personal long pairing code only into its native dialog**, optionally check “在这台电脑记住登录” (Remember on this computer; off by default), then choose “登录并打开项目” (Sign in and open project). Never paste the code into a browser or manage a URL, port or SSH command yourself.
 3. Choose an authorized build on the automatically opened local project page. Its **target platform** is displayed; a Linux build downloaded on Windows will not run on Windows. Keep the application open during downloads; sign in and retry after a disruption to use normal validated resume.
 

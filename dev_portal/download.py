@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -135,7 +136,9 @@ def _private_file(fd: int) -> None:
 def _open_private(path: Path, flags: int) -> int:
     if path.is_symlink():
         raise PortalError("Unsafe checkpoint or partial file")
-    fd = os.open(path, flags | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    # The Windows CRT defaults os.open to text mode: CRLF rewriting and Ctrl-Z
+    # logical EOF corrupt arbitrary archive bytes and break verified resume.
+    fd = os.open(path, flags | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0), 0o600)
     try:
         _private_file(fd)
     except BaseException:
@@ -231,14 +234,24 @@ def _save_checkpoint(path: Path, identity: dict, offset: int, prefix_sha256: str
             Path(staged).unlink(missing_ok=True)
 
 
-def _prefix_hash(fd: int, length: int) -> "hashlib._Hash":
+def _prefix_hash(fd: int, length: int, *, build_id: str, phase: str) -> "hashlib._Hash":
     os.lseek(fd, 0, os.SEEK_SET)
     digest = hashlib.sha256()
     read = 0
     while read < length:
         piece = os.read(fd, min(1024 * 1024, length - read))
         if not piece:
-            raise PortalError("Partial file changed before verification")
+            observed_size = os.fstat(fd).st_size
+            logging.getLogger(__name__).warning(
+                "partial verification build_id=%s phase=%s expected_bytes=%d read_bytes=%d "
+                "observed_size=%d io_mode=binary result=stopped reason=short_read "
+                "external_change=unavailable",
+                build_id, phase, length, read, observed_size,
+            )
+            raise PortalError(
+                f"Partial verification stopped early ({read}/{length} bytes read; "
+                f"file size {observed_size}); partial and checkpoint kept"
+            )
         digest.update(piece)
         read += len(piece)
     return digest
@@ -289,14 +302,22 @@ def download(build: Build, handoff: Handoff, destination: Path, *,
             current_size = os.fstat(fd).st_size
             if current_size < offset or current_size > build.size:
                 raise PortalError("Partial size disagrees with checkpoint")
+            # Verify the committed prefix before trimming uncommitted crash bytes.
+            # An older Windows text-mode client may have expanded LF on disk;
+            # preserve those bytes for inspection instead of truncating first.
+            prefix = _prefix_hash(fd, offset, build_id=build.build_id, phase="resume")
+            if prefix.hexdigest() != expected_prefix:
+                logging.getLogger(__name__).warning(
+                    "partial verification build_id=%s phase=resume expected_bytes=%d "
+                    "observed_size=%d io_mode=binary result=quarantined reason=hash_mismatch "
+                    "prior_writer=unavailable", build.build_id, offset, current_size,
+                )
+                _save_checkpoint(metadata, identity, offset, expected_prefix, state="quarantined")
+                raise PortalError("Partial bytes changed; partial quarantined without truncation")
             if current_size > offset:
                 # Crash after fsync(partial), before fsync(checkpoint): drop uncommitted bytes.
                 os.ftruncate(fd, offset)
                 os.fsync(fd)
-            prefix = _prefix_hash(fd, offset)
-            if prefix.hexdigest() != expected_prefix:
-                _save_checkpoint(metadata, identity, offset, expected_prefix, state="quarantined")
-                raise PortalError("Partial bytes changed; partial quarantined")
             if progress:
                 progress(offset, build.size)
             while offset < build.size:
@@ -312,7 +333,7 @@ def download(build: Build, handoff: Handoff, destination: Path, *,
                 _save_checkpoint(metadata, identity, offset, prefix.hexdigest())
                 if progress:
                     progress(offset, build.size)
-            if _prefix_hash(fd, build.size).hexdigest() != build.sha256:
+            if _prefix_hash(fd, build.size, build_id=build.build_id, phase="final").hexdigest() != build.sha256:
                 _save_checkpoint(metadata, identity, offset, prefix.hexdigest(), state="quarantined")
                 raise PortalError("SHA-256 verification failed; partial quarantined")
             os.fsync(fd)

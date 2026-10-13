@@ -3,11 +3,13 @@ import struct
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from dev_portal.client import Build, PortalError
 from dev_portal.desktop import DesktopError, DesktopSession
 from dev_portal.pairing import Pairing
+from dev_portal.remember import RememberError
 
 
 def pairing():
@@ -35,13 +37,19 @@ class FakeTunnel:
 
 
 class FakeServer:
-    def __init__(self, _hub, _downloads):
+    def __init__(self, _hub, _downloads, *, expected_project=None):
+        self.expected_project = expected_project
         self.origin = "http://127.0.0.1:9876"
         self.running = threading.Event()
+        self.started = threading.Event()
         self.closed = False
 
     def serve_forever(self, **_kw):
+        self.started.set()
         self.running.wait(3)
+
+    def wait_ready(self, timeout=2):
+        return self.started.wait(timeout)
 
     def shutdown(self):
         self.running.set()
@@ -60,8 +68,8 @@ class DesktopSessionTests(unittest.TestCase):
             tunnel = FakeTunnel(config)
             self.tunnels.append(tunnel)
             return tunnel
-        def make_server(hub, downloads):
-            server = FakeServer(hub, downloads)
+        def make_server(hub, downloads, *, expected_project):
+            server = FakeServer(hub, downloads, expected_project=expected_project)
             self.servers.append(server)
             return server
         self.builds = [Build("build-one", "game-dev-ue", "bundle.tar.zst", "linux",
@@ -85,6 +93,7 @@ class DesktopSessionTests(unittest.TestCase):
         url = self.session.connect(pairing(), remember=False)
         self.assertEqual(url, "http://127.0.0.1:9876")
         self.assertEqual(self.session.project, "game-dev-ue")
+        self.assertEqual(self.session.server.expected_project, "game-dev-ue")
         self.assertEqual(self.saved, [])
         self.assertEqual(self.forgot, [True])
         self.session.close()
@@ -96,6 +105,39 @@ class DesktopSessionTests(unittest.TestCase):
         self.assertEqual(self.saved, [pairing()])
         self.assertEqual(self.forgot, [])
         self.session.close()
+
+    def test_listener_thread_failure_rolls_back_before_remember_and_can_retry(self):
+        with patch("dev_portal.desktop.threading.Thread") as thread, self.assertLogs("dev_portal.desktop", level="WARNING") as logs:
+            thread.return_value.start.side_effect = RuntimeError("secret startup path")
+            with self.assertRaisesRegex(DesktopError, "Project connection unavailable") as caught:
+                self.session.connect(pairing(), remember=True)
+        self.assertNotIn("secret", str(caught.exception))
+        self.assertIn("reason=thread_not_started", logs.output[0])
+        self.assertNotIn("secret", str(logs.output))
+        self.assertEqual(self.saved, [])
+        self.assertIsNone(self.session.tunnel)
+        self.assertIsNone(self.session.server)
+        self.assertIsNone(self.session.thread)
+        self.assertTrue(self.servers[0].closed)
+        self.assertTrue(self.tunnels[0].closed)
+        self.assertFalse(self.servers[0].running.is_set())  # Never shutdown an unstarted server.
+        self.session.connect(pairing(), remember=True)
+        self.assertEqual(self.saved, [pairing()])
+        self.assertIs(self.session.server, self.servers[1])
+
+    def test_remember_failure_closes_started_listener_and_can_retry(self):
+        def denied(_pairing):
+            raise RememberError("Cannot save protected login")
+        self.session.remember_saver = denied
+        with self.assertRaises(RememberError):
+            self.session.connect(pairing(), remember=True)
+        self.assertTrue(self.servers[0].closed)
+        self.assertTrue(self.servers[0].running.is_set())
+        self.assertTrue(self.tunnels[0].closed)
+        self.assertIsNone(self.session.server)
+        self.session.remember_saver = self.saved.append
+        self.session.connect(pairing(), remember=True)
+        self.assertEqual(self.saved, [pairing()])
 
     def test_forget_restart_login_keeps_existing_download_checkpoint(self):
         with tempfile.TemporaryDirectory() as root:

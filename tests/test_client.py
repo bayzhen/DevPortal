@@ -1,4 +1,5 @@
 import contextlib
+from dataclasses import replace
 import io
 import json
 import os
@@ -7,7 +8,7 @@ import stat
 import tempfile
 import unittest
 
-from dev_portal.client import Build, HubClient, PortalError, MAX_JSON, safe_filename
+from dev_portal.client import Build, Handoff, HubClient, PortalError, MAX_JSON, safe_filename
 from dev_portal.config import ConfigError, load_config, save_config, validate_hub_url
 from tests.fakes import BUILD, TOKEN, FakeResponse, FakeTransport, json_response, public_build, public_handoff
 
@@ -111,7 +112,24 @@ class HubClientTests(unittest.TestCase):
         self.assertNotIn(token, str(raised.exception))
         self.assertIsNone(raised.exception.__cause__)
 
+    def test_handoff_path_delimiters_cannot_be_advertised_as_usable_builds(self):
+        filename = "demo#1.zip"
+        self.assertEqual(safe_filename(filename), filename)
+        build = replace(BUILD, filename=filename)
+        data = {**public_handoff(), "filename": filename,
+                "remote_path": "/apps/gdue/builds/demo#1.zip"}
+        with self.assertRaisesRegex(PortalError, "Invalid download handoff"):
+            Handoff.parse(data, build)
+
     def test_filename_windows_safe(self):
-        for name in ("CON.txt", "LPT9", "a:b", ".hidden", "name. ", "a\\b", "a/b"):
+        # Mirrored in the independently deployed DevHub portal catalog tests.
+        unsafe = ("CON.txt", "LPT9", "a:b", ".hidden", "name. ", "a\\b", "a/b",
+                  "PRN", "AUX.zip", "COM1.txt", "NUL", "LPT1.x", "name.",
+                  "bad\x7f", "bad\x00", "<bad>", "a?b", "a*b", "x" * 201,
+                  "COM¹.zip", "COM².zip", "LPT³.zip")
+        for name in unsafe:
             with self.subTest(name=name), self.assertRaises(PortalError):
                 safe_filename(name)
+        for name in ("demo.tar.zst", "com0.zip", "conventional.zip", "x" * 200):
+            with self.subTest(name=name):
+                self.assertEqual(safe_filename(name), name)

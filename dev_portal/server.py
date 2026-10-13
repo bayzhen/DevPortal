@@ -6,6 +6,7 @@ import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 import json
+import logging
 from pathlib import Path
 import secrets
 import threading
@@ -18,13 +19,16 @@ from .download import download
 class PortalServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, hub: HubClient, destination: Path, port: int = 0, *, transfer=None):
+    def __init__(self, hub: HubClient, destination: Path, port: int = 0, *, transfer=None,
+                 expected_project: str | None = None):
         # Hostname is not caller-configurable: do not expose the local control service.
         super().__init__(("127.0.0.1", port), PortalHandler)
         self.hub = hub
+        self.expected_project = expected_project  # None only for configured legacy CLI.
         self.destination = destination
         self.transfer = transfer
         self.csrf = secrets.token_urlsafe(32)
+        self._serving = threading.Event()
         self.state = {"state": "idle", "build_id": None, "filename": None,
                       "bytes_done": 0, "total_bytes": 0, "error": None}
         self.state_lock = threading.Lock()
@@ -33,9 +37,24 @@ class PortalServer(ThreadingHTTPServer):
     def origin(self) -> str:
         return f"http://127.0.0.1:{self.server_port}"
 
+    def service_actions(self) -> None:
+        # Called by serve_forever after its first actual loop iteration.
+        self._serving.set()
+
+    def wait_ready(self, timeout: float = 2) -> bool:
+        return self._serving.wait(timeout)
+
     def progress(self) -> dict:
         with self.state_lock:
             return dict(self.state)
+
+    def authorized_builds(self):
+        builds = self.hub.builds()
+        if self.expected_project is not None and any(
+            build.project_ref != self.expected_project for build in builds
+        ):
+            raise PortalError("Project identity did not match; contact the operator")
+        return builds
 
     def request_download(self, build_id: str) -> bool:
         with self.state_lock:
@@ -43,13 +62,25 @@ class PortalServer(ThreadingHTTPServer):
                 return False
             self.state = {"state": "queued", "build_id": build_id, "filename": None,
                           "bytes_done": 0, "total_bytes": 0, "error": None}
-        thread = threading.Thread(target=self._worker, args=(build_id,), daemon=True)
-        thread.start()
+        try:
+            thread = threading.Thread(target=self._worker, args=(build_id,), daemon=True)
+            thread.start()
+        except Exception:
+            # A thread that never started cannot leave the queue permanently busy.
+            with self.state_lock:
+                if self.state["state"] == "queued" and self.state["build_id"] == build_id:
+                    self.state.update(state="failed", error="Local download worker unavailable; retry")
+            # The request identifier is not yet catalog-validated: avoid logging it.
+            logging.getLogger(__name__).warning(
+                "local download queue phase=thread_start result=failed "
+                "reason=worker_unavailable build_id=unavailable bearer=unavailable"
+            )
+            raise PortalError("Local download worker unavailable; retry") from None
         return True
 
     def _worker(self, build_id: str) -> None:
         try:
-            builds = self.hub.builds()
+            builds = self.authorized_builds()
             build = next((item for item in builds if item.build_id == build_id), None)
             if build is None:
                 raise PortalError("Build is not available")
@@ -128,7 +159,7 @@ class PortalHandler(BaseHTTPRequestHandler):
             self._send(200, data, mime + "; charset=utf-8")
         elif self.path == "/api/builds":
             try:
-                builds = self.server.hub.builds()
+                builds = self.server.authorized_builds()
                 self._json(200, {"builds": [item.public() for item in builds]})
             except PortalError:
                 self._json(502, {"error": "Build catalog unavailable"})
@@ -158,7 +189,12 @@ class PortalHandler(BaseHTTPRequestHandler):
         if not isinstance(data, dict) or set(data) != {"build_id"} or not isinstance(data["build_id"], str) or len(data["build_id"]) > 128:
             self._json(400, {"error": "Invalid request"})
             return
-        if not self.server.request_download(data["build_id"]):
+        try:
+            accepted = self.server.request_download(data["build_id"])
+        except PortalError:
+            self._json(503, {"error": "Local download worker unavailable; retry"})
+            return
+        if not accepted:
             self._json(409, {"error": "A download is already active"})
             return
         self._json(202, {"state": "queued"})

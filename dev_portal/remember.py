@@ -67,15 +67,18 @@ def remembered_path() -> Path:
 
 
 def _directory(path: Path, *, create: bool) -> None:
-    if create:
-        path.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
+        if create:
+            path.mkdir(mode=0o700, parents=True, exist_ok=True)
         info = path.lstat()
+        is_link = path.is_symlink()
     except FileNotFoundError:
         if not create:
             return
         raise RememberError("Private login directory unavailable") from None
-    if not stat.S_ISDIR(info.st_mode) or path.is_symlink():
+    except OSError:
+        raise RememberError("Private login directory unavailable") from None
+    if not stat.S_ISDIR(info.st_mode) or is_link:
         raise RememberError("Private login directory invalid")
     if sys.platform != "win32" and (info.st_uid != os.getuid() or info.st_mode & 0o077):
         raise RememberError("Private login directory invalid")
@@ -84,9 +87,12 @@ def _directory(path: Path, *, create: bool) -> None:
 def _existing(path: Path) -> bool:
     try:
         info = path.lstat()
+        is_link = path.is_symlink()
     except FileNotFoundError:
         return False
-    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or path.is_symlink():
+    except OSError:
+        raise RememberError("Saved login unavailable; contact the operator") from None
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or is_link:
         raise RememberError("Saved login file invalid")
     if sys.platform != "win32" and (info.st_uid != os.getuid() or info.st_mode & 0o077):
         raise RememberError("Saved login file invalid")

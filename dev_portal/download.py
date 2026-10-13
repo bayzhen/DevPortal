@@ -15,7 +15,7 @@ import time
 from typing import Callable, Iterator
 from urllib.parse import parse_qsl, quote, urljoin, urlsplit
 
-from .client import Build, Handoff, HTTPTransport, PortalError, Transport
+from .client import Build, Handoff, HTTPTransport, PortalError, Transport, safe_filename
 
 SEGMENT_BYTES = 4 * 1024 * 1024
 IO_BYTES = 64 * 1024
@@ -257,6 +257,30 @@ def _prefix_hash(fd: int, length: int, *, build_id: str, phase: str) -> "hashlib
     return digest
 
 
+def _verified_existing_target(path: Path, build: Build) -> None:
+    """Verify a pre-existing published path without trusting its name or checkpoint."""
+    if path.is_symlink():
+        raise PortalError("Target file already exists; it will not be overwritten")
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                     | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
+        try:
+            before = os.fstat(fd)
+            if not stat.S_ISREG(before.st_mode) or before.st_size != build.size:
+                raise PortalError("Target file already exists; it will not be overwritten")
+            if _prefix_hash(fd, build.size, build_id=build.build_id, phase="published").hexdigest() != build.sha256:
+                raise PortalError("Target file already exists; it will not be overwritten")
+            after = os.fstat(fd)
+            named = path.lstat()
+            identity = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+            if not stat.S_ISREG(named.st_mode) or identity(before) != identity(after) or identity(after) != identity(named):
+                raise PortalError("Target file changed during verification; it will not be overwritten")
+        finally:
+            os.close(fd)
+    except OSError:
+        raise PortalError("Cannot verify existing target; it will not be overwritten") from None
+
+
 def download(build: Build, handoff: Handoff, destination: Path, *,
              transport: Transport | None = None,
              progress: Callable[[int, int], None] | None = None,
@@ -268,7 +292,8 @@ def download(build: Build, handoff: Handoff, destination: Path, *,
         handoff.build_id, handoff.filename, handoff.size, handoff.sha256, handoff.platform
     ):
         raise PortalError("Download handoff disagrees with catalog")
-    # Vet before touching local disk or opening network connections.
+    # Vet even an injected Build before touching local disk or opening network.
+    safe_filename(build.filename)
     _initial_url(handoff.dlink, handoff.access_token)
     destination = Path(destination).expanduser()
     if os.name == "nt" and not destination.resolve().is_relative_to(Path.home().resolve()):
@@ -285,11 +310,32 @@ def download(build: Build, handoff: Handoff, destination: Path, *,
     transfer = transport or HTTPTransport()
     with _locked(private / (base + ".lock")):
         if final.exists() or final.is_symlink():
-            raise PortalError("Target file already exists; it will not be overwritten")
+            _verified_existing_target(final, build)
+            logging.getLogger(__name__).info(
+                "download recovery build_id=%s phase=published expected_bytes=%d "
+                "result=verified reason=existing_target private_cleanup=unavailable",
+                build.build_id, build.size,
+            )
+            if progress:
+                progress(build.size, build.size)
+            return final
         has_partial, has_metadata = partial.exists() or partial.is_symlink(), metadata.exists() or metadata.is_symlink()
-        if has_partial != has_metadata:
+        if has_partial and not has_metadata:
+            fd = _open_private(partial, os.O_RDWR)
+            try:
+                if os.fstat(fd).st_size:
+                    raise PortalError("Unpaired partial/checkpoint; manual inspection required")
+                _save_checkpoint(metadata, identity, 0, hashlib.sha256(b"").hexdigest())
+                logging.getLogger(__name__).info(
+                    "download recovery build_id=%s phase=initial expected_bytes=%d "
+                    "result=checkpointed reason=empty_orphan prior_writer=unavailable",
+                    build.build_id, build.size,
+                )
+            finally:
+                os.close(fd)
+        elif has_metadata and not has_partial:
             raise PortalError("Unpaired partial/checkpoint; manual inspection required")
-        if not has_partial:
+        elif not has_partial:
             fd = _open_private(partial, os.O_RDWR | os.O_CREAT | os.O_EXCL)
             try:
                 os.fsync(fd)

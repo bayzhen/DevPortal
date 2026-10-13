@@ -80,11 +80,13 @@ async function progress() {
     if (active && !timer) timer = setInterval(progress, 900);
     if (!active && timer) { clearInterval(timer); timer = null; }
   } catch (_) {
-    downloadMessage.textContent = "Local progress unavailable.";
-    if (timer) { clearInterval(timer); timer = null; }
+    downloadMessage.textContent = "Local progress unavailable; retrying. Refresh to retry now.";
+    // Do not strand disabled controls after one failed request; a successful
+    // idle/failed/complete response will clear the timer and restore controls.
+    if (!timer) timer = setInterval(progress, 1200);
   }
 }
 
-document.querySelector("#refresh").addEventListener("click", catalog);
+document.querySelector("#refresh").addEventListener("click", () => { catalog(); progress(); });
 catalog();
 progress();

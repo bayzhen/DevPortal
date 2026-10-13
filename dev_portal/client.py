@@ -17,7 +17,8 @@ MAX_BUILDS = 128
 MAX_BUILD_BYTES = 256 * 1024**3
 _BUILD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
-_RESERVED = re.compile(r"(?i)(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?\Z")
+# Win32 also treats superscript ¹²³ as device-number digits in COM/LPT names.
+_RESERVED = re.compile(r"(?i)(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\..*)?\Z")
 
 
 class PortalError(Exception):

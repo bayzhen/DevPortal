@@ -23,7 +23,7 @@ class DownloadTests(unittest.TestCase):
         return (self.destination / ".devportal" / (base + ".part"),
                 self.destination / ".devportal" / (base + ".json"))
 
-    def test_full_direct_download_and_no_overwrite(self):
+    def test_full_direct_download_and_verified_existing_target(self):
         seen = []
         def respond(method, url, headers):
             self.assertEqual(method, "GET")
@@ -40,9 +40,89 @@ class DownloadTests(unittest.TestCase):
         self.assertEqual(len(fake.calls), 4)
         self.assertFalse(self._files()[0].exists())
         self.assertFalse(self._files()[1].exists())
+        repeated = []
+        same = download(BUILD, handoff(token="fresh-token"), self.destination,
+                        transport=fake, segment_bytes=7,
+                        progress=lambda done, total: repeated.append((done, total)))
+        self.assertEqual(same, path)
+        self.assertEqual(repeated, [(BUILD.size, BUILD.size)])
+        self.assertEqual(len(fake.calls), 4)  # No second provider transfer.
+
+
+    def test_windows_reserved_superscript_target_never_enters_publication(self):
+        for name in ("COM¹.zip", "COM².zip", "LPT³.zip"):
+            with self.subTest(name=name), self.assertRaisesRegex(PortalError, "Invalid filename"):
+                download(replace(BUILD, filename=name), replace(handoff(), filename=name),
+                         self.destination, transport=FakeTransport(lambda *_:
+                             self.fail("Unsafe target must not initiate network traffic")))
+            self.assertFalse((self.destination / name).exists())
+            self.assertFalse(self.destination.exists())
+
+    def test_empty_orphan_partial_recovers_but_nonempty_orphan_is_preserved(self):
+        partial, checkpoint = self._files()
+        partial.parent.mkdir(parents=True, mode=0o700)
+        partial.touch(mode=0o600)
+        fake = FakeTransport(lambda _m, _u, headers: range_response(headers))
+        with self.assertLogs("dev_portal.download", level="INFO") as diagnostics:
+            target = download(BUILD, handoff(), self.destination, transport=fake, segment_bytes=7)
+        self.assertEqual(target.read_bytes(), PAYLOAD)
+        self.assertIn("reason=empty_orphan", diagnostics.output[0])
+        self.assertFalse(partial.exists())
+        self.assertFalse(checkpoint.exists())
+        target.unlink()
+        partial.write_bytes(PAYLOAD[:7])
+        if os.name != "nt":
+            partial.chmod(0o600)
+        untouched = partial.read_bytes()
+        with self.assertRaisesRegex(PortalError, "manual inspection"):
+            download(BUILD, handoff(), self.destination, transport=FakeTransport(
+                lambda *_: self.fail("No network request for an uncommitted orphan")))
+        self.assertEqual(partial.read_bytes(), untouched)
+        self.assertFalse(checkpoint.exists())
+
+    def test_published_hardlink_cleanup_failure_is_retryable_without_deleting_evidence(self):
+        partial, checkpoint = self._files()
+        real_unlink = Path.unlink
+        def fail_partial_unlink(path, *args, **kwargs):
+            if path == partial:
+                raise PermissionError("cannot remove private evidence")
+            return real_unlink(path, *args, **kwargs)
+        with patch.object(Path, "unlink", fail_partial_unlink), self.assertRaises(PermissionError):
+            download(BUILD, handoff(), self.destination, transport=FakeTransport(
+                lambda _m, _u, headers: range_response(headers)), segment_bytes=7)
+        final = self.destination / BUILD.filename
+        self.assertEqual(final.read_bytes(), PAYLOAD)
+        self.assertEqual(partial.read_bytes(), PAYLOAD)
+        self.assertEqual(json.loads(checkpoint.read_text())["offset"], BUILD.size)
+        with self.assertLogs("dev_portal.download", level="INFO") as diagnostics:
+            recovered = download(BUILD, handoff(token="new-token"), self.destination,
+                                 transport=FakeTransport(lambda *_: self.fail("No provider transfer after publication")))
+        self.assertEqual(recovered, final)
+        self.assertIn("reason=existing_target", diagnostics.output[0])
+        self.assertTrue(partial.exists())  # Private evidence is never cleaned by guesswork.
+        self.assertTrue(checkpoint.exists())
+
+    def test_existing_wrong_digest_or_symlink_is_never_overwritten(self):
+        self.destination.mkdir(mode=0o700)
+        final = self.destination / BUILD.filename
+        corrupt = PAYLOAD[:-1] + b"?"
+        final.write_bytes(corrupt)
+        network = FakeTransport(lambda *_: self.fail("Unrelated final needs no network"))
         with self.assertRaisesRegex(PortalError, "already exists"):
-            download(BUILD, handoff(), self.destination, transport=fake, segment_bytes=7)
-        self.assertEqual(len(fake.calls), 4)
+            download(BUILD, handoff(), self.destination, transport=network)
+        self.assertEqual(final.read_bytes(), corrupt)
+        final.unlink()
+        elsewhere = Path(self.temp.name) / "elsewhere.bin"
+        elsewhere.write_bytes(PAYLOAD)
+        try:
+            final.symlink_to(elsewhere)
+        except OSError:
+            self.skipTest("Symlink creation is unavailable on this Windows runner")
+        with self.assertRaisesRegex(PortalError, "already exists"):
+            download(BUILD, handoff(), self.destination, transport=network)
+        self.assertTrue(final.is_symlink())
+        self.assertEqual(elsewhere.read_bytes(), PAYLOAD)
+        self.assertEqual(network.calls, [])
 
     def test_interruption_then_fresh_handoff_resume(self):
         def initial(method, url, headers):

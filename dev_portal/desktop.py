@@ -6,6 +6,7 @@ for bare desktop launch, keeping source CLI operation and headless tests intact.
 from __future__ import annotations
 
 from pathlib import Path
+import logging
 import queue
 import threading
 import webbrowser
@@ -58,37 +59,57 @@ class DesktopSession:
             revision = self._forget_revision
         tunnel = None
         server = None
+        worker = None
+        started = False
+        serving = False
         try:
             tunnel = self.tunnel_factory(pairing).start()
             hub = self.hub_factory(tunnel.origin, pairing.portal_key, tunnel.transport())
             builds = hub.builds()  # Authenticated catalog before browser or saved login.
             if any(build.project_ref != pairing.project_ref for build in builds):
                 raise DesktopError("Project identity did not match; contact the operator")
-            server = self.server_factory(hub, self.downloads)
+            server = self.server_factory(hub, self.downloads, expected_project=pairing.project_ref)
+            worker = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.3}, daemon=True)
+            worker.start()
+            started = True
+            # Thread.start() does not prove serve_forever has entered its loop.
+            # Wait before a remember failure can race shutdown with startup.
+            serving = server.wait_ready()
+            if not serving:
+                raise DesktopError("Local project page unavailable; retry")
             if remember:
                 with self._remember_lock:
                     if revision == self._forget_revision:
                         self.remember_saver(pairing)
             else:
                 self.forget()
-            self.tunnel = tunnel
-            self.server = server
+            # No session is visible until the listener and remember choice succeed.
+            self.tunnel, self.server, self.thread = tunnel, server, worker
             self.pairing = pairing
             self.project = pairing.project_ref if builds else None
-            self.thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.3}, daemon=True)
-            self.thread.start()
             return server.origin
-        except (PairingError, PortalError, RememberError, TunnelError, OSError, DesktopError):
+        except Exception as error:
             if server is not None:
-                server.server_close()
-            if tunnel is not None:
-                tunnel.close()
-            raise
-        except Exception:
-            if server is not None:
-                server.server_close()
-            if tunnel is not None:
-                tunnel.close()
+                logging.getLogger(__name__).warning(
+                    "session startup project_ref=%s phase=%s result=failed "
+                    "reason=%s bearer=unavailable",
+                    pairing.project_ref, "listener" if not serving else "memory",
+                    "thread_not_started" if not started else "startup_or_storage_failure",
+                )
+            try:
+                if server is not None:
+                    try:
+                        if serving:
+                            server.shutdown()
+                    finally:
+                        server.server_close()
+                        if started and worker is not None:
+                            worker.join(timeout=2)
+            finally:
+                if tunnel is not None:
+                    tunnel.close()
+            if isinstance(error, (PairingError, PortalError, RememberError, TunnelError, OSError, DesktopError)):
+                raise
             raise DesktopError("Project connection unavailable; contact the operator") from None
 
     def close(self) -> None:

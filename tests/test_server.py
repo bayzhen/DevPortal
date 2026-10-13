@@ -4,8 +4,9 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
-from dev_portal.client import HubClient
+from dev_portal.client import HubClient, PortalError
 from dev_portal.server import PortalServer
 from tests.fakes import BUILD, DIGEST, PAYLOAD, TOKEN, FakeTransport, json_response, public_build, public_handoff, range_response
 
@@ -15,10 +16,11 @@ class LocalPageTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.calls = []
+        self.catalog_rows = [public_build()]
         def hub_response(method, url, headers):
             self.calls.append((method, url))
             if method == "GET" and url.endswith("/portal/v1/builds"):
-                return json_response({"builds": [public_build()]})
+                return json_response({"builds": self.catalog_rows})
             if method == "POST" and url.endswith("/portal/v1/builds/build-one/download"):
                 return json_response(public_handoff())
             self.fail("Unexpected DevHub request")
@@ -57,6 +59,7 @@ class LocalPageTests(unittest.TestCase):
             conn.close()
 
     def test_page_and_catalog_hide_handoff_secrets(self):
+        self.assertTrue(self.server.wait_ready())
         self.assertEqual(self.server.server_address[0], "127.0.0.1")
         status, page, headers = self.request("GET", "/")
         self.assertEqual(status, 200)
@@ -133,6 +136,72 @@ class LocalPageTests(unittest.TestCase):
         self.assertIn(b'projects.length > 1', script)
         self.assertNotIn(TOKEN.encode(), page + script)
         self.assertNotIn(b'portal-key-safe', page + script)
+
+    def test_paired_project_is_checked_on_catalog_refresh_and_worker_lookup(self):
+        self.server.expected_project = BUILD.project_ref
+        self.assertEqual(self.request("GET", "/api/builds")[0], 200)
+        self.catalog_rows.append({**public_build(), "build_id": "foreign", "project_ref": "other-project"})
+        status, body, _ = self.request("GET", "/api/builds")
+        self.assertEqual(status, 502)
+        self.assertNotIn(b"foreign", body)
+        done = threading.Event()
+        worker = self.server._worker
+        def wrapped(build_id):
+            try:
+                worker(build_id)
+            finally:
+                done.set()
+        self.server._worker = wrapped
+        status, _, _ = self.request("POST", "/api/download", origin=self.server.origin,
+                                     csrf=self.server.csrf, payload={"build_id": BUILD.build_id})
+        self.assertEqual(status, 202)
+        self.assertTrue(done.wait(3))
+        self.assertEqual(self.server.progress()["state"], "failed")
+        self.assertEqual(len(self.calls), 3)  # Two catalog reads and one worker read; no handoff.
+        self.assertEqual(self.transfer.calls, [])
+
+    def test_configured_legacy_cli_can_list_multi_project_catalog(self):
+        self.catalog_rows.append({**public_build(), "build_id": "foreign", "project_ref": "other-project"})
+        self.assertIsNone(self.server.expected_project)
+        status, body, _ = self.request("GET", "/api/builds")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(json.loads(body)["builds"]), 2)
+
+    def test_thread_start_failure_is_retryable_and_never_claims_queue_active(self):
+        with patch("dev_portal.server.threading.Thread") as failed_thread, self.assertLogs("dev_portal.server", level="WARNING") as logs:
+            failed_thread.return_value.start.side_effect = RuntimeError("secret OS detail")
+            with self.assertRaisesRegex(PortalError, "Local download worker unavailable") as caught:
+                self.server.request_download(BUILD.build_id)
+        self.assertNotIn("secret", str(caught.exception))
+        self.assertIn("reason=worker_unavailable", logs.output[0])
+        self.assertNotIn("secret", str(logs.output))
+        state = self.server.progress()
+        self.assertEqual(state["state"], "failed")
+        self.assertEqual(state["error"], "Local download worker unavailable; retry")
+        self.assertNotIn(TOKEN, str(state))
+        with patch.object(self.server, "request_download", side_effect=PortalError("internal detail")):
+            status, body, _ = self.request("POST", "/api/download", origin=self.server.origin,
+                                           csrf=self.server.csrf, payload={"build_id": BUILD.build_id})
+        self.assertEqual(status, 503)
+        self.assertNotIn(b"internal detail", body)
+        done = threading.Event()
+        worker = self.server._worker
+        def wrapped(build_id):
+            try:
+                worker(build_id)
+            finally:
+                done.set()
+        self.server._worker = wrapped
+        self.assertTrue(self.server.request_download(BUILD.build_id))
+        self.assertTrue(done.wait(3))
+        self.assertEqual(self.server.progress()["state"], "complete")
+
+    def test_progress_failure_keeps_bounded_retry_and_manual_refresh(self):
+        status, script, _ = self.request("GET", "/static/app.js")
+        self.assertEqual(status, 200)
+        self.assertIn(b"if (!timer) timer = setInterval(progress, 1200);", script)
+        self.assertIn(b'addEventListener("click", () => { catalog(); progress(); })', script)
+        self.assertNotIn(b"Local progress unavailable.\";\n    if (timer)", script)
 
     def test_unknown_build_and_malformed_action_are_bounded(self):
         status, body, _ = self.request("POST", "/api/download", origin=self.server.origin,
